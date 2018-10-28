@@ -3,7 +3,42 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from sklearn import linear_model
+# from sklearn import linear_model
+
+# Coordinate descent-based LASSO solution stolen from sklearn
+def cd_lasso(y, A, x0=None, l1_lambda=0.01, tol=1.0e-2):
+    N, D = A.shape
+
+    A_norm2 = np.square(A).sum(axis=0)
+
+    if x0 is None:
+        x0 = np.random.random(size=(D,))
+
+    x = np.copy(x0)
+    r = y - np.dot(A, x)
+    max_xi = np.max(np.abs(x))
+
+    while True:
+        max_dxi = 0
+        for i in range(D):
+            if A_norm2[i] == 0.0:
+                continue
+            x_i0 = x[i]
+
+            A_i = A[:,i]
+            r += A_i * x[i]
+            rho_i = (r * A_i).sum()
+            sign = 1 if rho_i > 0 else -1
+            x[i] = (sign * max(abs(rho_i) - l1_lambda, 0)) / A_norm2[i]
+
+            dxi = abs(x[i] - x_i0)
+            max_dxi = dxi if dxi > max_dxi else max_dxi
+
+            r -= x[i] * A_i
+            max_xi = max(max_xi, x[i])
+        if (max_dxi / max_xi) < tol:
+            break
+    return x
 
 # Simulation to make sure we can run the compressive sampling algorithm on some
 # data at least.
@@ -50,9 +85,10 @@ for i in range(0, N0 - L_window + 1, L_window // 2):
     X_window = X0[i:i+L_window]
     Y = np.dot(phi, X_window)
 
-    lasso = linear_model.Lasso(alpha=0.01, fit_intercept=False)
-    lasso.fit(A, Y)
-    s = lasso.coef_
+    # lasso = linear_model.Lasso(alpha=0.01, fit_intercept=False)
+    # lasso.fit(A, Y)
+    # s = lasso.coef_
+    s = cd_lasso(Y, A)
     xr = np.dot(psi.T, s)
     Xr[i+L_window//4:i+3*L_window//4] = xr[L_window//4:3*L_window//4]
 
