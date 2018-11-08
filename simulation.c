@@ -25,15 +25,9 @@ void dot(double *A, double *B, size_t M, size_t N, size_t P, double *C) {
 	}
 }
 
-void vecadd(double *a, double *b, size_t N, bool sub_flag, double *out) {
-	if (sub_flag) {
-		for (size_t i = 0; i < N; ++i) {
-			out[i] = a[i] - b[i];
-		}
-	} else {
-		for (size_t i = 0; i < N; ++i) {
-			out[i] = a[i] + b[i];
-		}
+void vecsub(double *a, double *b, size_t N, double *out) {
+	for (size_t i = 0; i < N; ++i) {
+		out[i] = a[i] - b[i];
 	}
 }
 
@@ -59,7 +53,7 @@ void cd_lasso(double *y, double *A,
 
 	double *r = malloc(sizeof(double) * M);
 	memcpy(r, y, sizeof(double) * M);
-	vecadd(y, y_hat, M, true, r);
+	vecsub(y, y_hat, M, true, r);
 
 	double max_xi = 0;
 	for (int i = 0; i < N; ++i) {
