@@ -8,3 +8,6 @@ __pycache__/
 
 # Binaries
 a.out
+
+# Vim swap files
+*.swp

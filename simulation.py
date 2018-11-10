@@ -8,7 +8,7 @@ from lasso import cd_lasso
 
 # Simulation to make sure we can run the compressive sampling algorithm on some
 # data at least.
-datafile_name = 'samples.csv'
+datafile_name = 'data/samples.csv'
 reconstruction_filename = 'reconstructed_py.csv'
 
 data = np.loadtxt(datafile_name, delimiter=',')
@@ -37,7 +37,7 @@ psi[0,:] *= (1.0 / np.sqrt(2))
 psi *= np.sqrt(2.0 / N_window)
 
 # Random permutation of identity matrix, chopped off to take fewer samples.
-phi_mat_filename = 'phi_mat.csv'
+phi_mat_filename = 'data/phi_mat.csv'
 M = N_window // 12
 try:
     phi = np.loadtxt(phi_mat_filename, delimiter=',')

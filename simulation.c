@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include "setup.h"
+
 double max(double a, double b) {
 	return (a > b ? a : b) ;
 }
@@ -53,7 +55,7 @@ void cd_lasso(double *y, double *A,
 
 	double *r = malloc(sizeof(double) * M);
 	memcpy(r, y, sizeof(double) * M);
-	vecsub(y, y_hat, M, true, r);
+	vecsub(y, y_hat, M, r);
 
 	double max_xi = 0;
 	for (int i = 0; i < N; ++i) {
@@ -151,6 +153,60 @@ void get_selected_rows(double *mat, bool *flags, int N, int m, double *out) {
 	}
 }
 
+void ppg(double *t0, double *X0, size_t N0,
+		 bool *phi_flags, const PPG_Params params,
+		 double *Xr) {
+	/*
+	 * t0		:	sample instants (in s) 
+	 * X0		:	original samples (which we are trying to reconstruct)
+	 * N0		:	number of samples we have
+	 * phi_flags:	boolean flags to denote which observations we are selecting,
+	 *				this should have been randomly generated previously
+	 * params	:	simulation/experiment parameters
+	 * Xr		:	where we should store the reconstructed signal (output)
+	 */
+	
+	size_t N_window = params.N_window;
+	size_t M = params.M;
+
+	// DCT basis matrix
+	// TODO: implement fast DCT so this isn't needed.
+	double *psi = malloc(sizeof(double) * N_window * N_window);
+	// This is psi.T. Only keeping a separate copy because I am lazy.
+	// TODO: become less lazy. Also write something better.
+	double *psiT = malloc(sizeof(double) * N_window * N_window);
+	for (int k = 0; k < N_window; ++k) {
+		double factor = (2.0 / sqrt(N_window)) * (k == 0 ? 1.0 / sqrt(2) : 1.0);
+		for (int n = 0; n < N_window; ++n) {
+			psi[k * N_window + n] = factor * cos((M_PI / N_window) * (n + 0.5) * k);
+			psiT[n * N_window + k] = psi[k * N_window + n];
+		}
+	}
+
+	double *A = malloc(sizeof(double) * M * N_window);
+	get_selected_rows(psiT, phi_flags, N_window, M, A);
+
+	double *y = malloc(sizeof(double) * M);
+	double *s = malloc(sizeof(double) * N_window);
+	double *xr = malloc(sizeof(double) * N_window);
+
+	for (size_t t = 0; t < N0 - N_window + 1; t += N_window / 2) {
+		get_selected_elements(X0 + t, phi_flags, N_window, M, y);
+		cd_lasso(y, A, M, N_window, 0.01, s, 1.0e-2);
+		dot(psiT, s, N_window, N_window, 1, xr);
+		memcpy(Xr + t + N_window / 4,
+			   xr	  + N_window / 4,
+			   sizeof(double) * N_window / 2);
+	}
+	
+	free(xr);
+	free(s);
+	free(y);
+	free(A);
+	free(psiT);
+	free(psi);
+}
+
 /*
  * argv[0]
  * argv[1]: samples.csv
@@ -166,10 +222,14 @@ int main(int argc, char **argv) {
 	}
 
 	srand(time(NULL));
+	PPG_Params params = get_ppg_params();
+	printf("f0: %.1lf\nT0: %.3lf\n", params.f0, params.T0);
+	printf("N_window: %ld\nM: %ld\n", params.N_window, params.M);
 
-	const size_t MAX_N = 10000;
+	const size_t MAX_N = params.MAX_SAMPLES;
 	size_t N0 = 0;
 	double t0[MAX_N], X0[MAX_N];
+	double Xr[MAX_N];
 
 	FILE* fp_samples = fopen(argv[1], "r");
 	if (!fp_samples) {
@@ -178,75 +238,25 @@ int main(int argc, char **argv) {
 	} else {
 		while (fscanf(fp_samples, "%lf,%lf\n", &t0[N0], &X0[N0]) == 2) {
 			N0++;
+			if (N0 == MAX_N) break;
 		}
 		fclose(fp_samples);
 	}
 
 	printf("Read %ld samples.\n", N0);
 
-	const double f0 = 4.0;					// Hz
-	const double T0 = 1.0 / f0;				// seconds
-
-	const double T_window = 60;				// seconds
-	size_t N_window = (size_t) floor(T_window / T0);
-	// Window length must be a multiple of 4 for this method.
-	if (N_window % 4 != 0)
-		N_window -= N_window % 4;
-	
-	// Just making things simpler and removing the chance of incomplete windows.
-	N0 -= N0 % (N_window / 2);
-
-	// DCT basis matrix
-	// TODO: implement fast DCT so this isn't needed.
-	double *psi = malloc(sizeof(double) * N_window * N_window);
-	double *psiT = malloc(sizeof(double) * N_window * N_window);
-	for (int k = 0; k < N_window; ++k) {
-		double factor = (2.0 / sqrt(N_window)) * (k == 0 ? 1.0 / sqrt(2) : 1.0);
-		for (int n = 0; n < N_window; ++n) {
-			psi[k * N_window + n] = factor * cos((M_PI / N_window) * (n + 0.5) * k);
-			psiT[n * N_window + k] = psi[k * N_window + n];
-		}
-	}
-
-
-	// Random sampling matrix
-	const int CF = 12;						// compression factor
-	size_t M = N_window / CF;
-	
-	printf("f0: %.1lf\nT0: %.3lf\n", f0, T0);
-	printf("N0: %ld\nN_window: %ld\nM: %ld\n", N0, N_window, M);
-
+	size_t N_window = params.N_window;
 	bool *phi_flags = malloc(sizeof(bool) * N_window);
 	get_random_sample_flags_from_file(argv[3], N_window, phi_flags);
 	// get_random_sample_flags(N_window, M, phi_flags);
 
-	double *A = malloc(sizeof(double) * M * N_window);
-	get_selected_rows(psiT, phi_flags, N_window, M, A);
+	// Just making things simpler and removing the chance of incomplete windows.
+	N0 = NEAREST_MULTIPLE(N0, N_window / 2);
+	printf("N0: %ld\n", N0);
 
-	double Xr[MAX_N];
-	double *y = malloc(sizeof(double) * M);
-	double *s = malloc(sizeof(double) * N_window);
-	double *xr = malloc(sizeof(double) * N_window);
+	// call ppg algorithm
+	ppg(t0, X0, N0, phi_flags, params, Xr);
 
-	for (size_t t = 0; t < N0 - N_window + 1; t += N_window / 2) {
-		get_selected_elements(X0 + t, phi_flags, N_window, M, y);
-		cd_lasso(y, A, M, N_window, 0.01, s, 1.0e-2);
-		dot(psiT, s, N_window, N_window, 1, xr);
-		memcpy(Xr + t + N_window / 4,
-			   xr	  + N_window / 4,
-			   sizeof(double) * N_window / 2);
-	}
-	
-	double corr_coef = 0.0;
-	double X0_mag = 1.0, Xr_mag = 1.0;
-	dot(Xr, X0, 1, N0, 1, &corr_coef);
-	dot(Xr, Xr, 1, N0, 1, &Xr_mag);
-	dot(X0, X0, 1, N0, 1, &X0_mag);
-	Xr_mag = sqrt(Xr_mag);
-	X0_mag = sqrt(X0_mag);
-	corr_coef /= (Xr_mag * X0_mag);
-	printf("Correlation coefficient: %lf\n", corr_coef); 
-	
 	printf("Writing to file %s...\n", argv[2]);
 	FILE *fp_write = fopen(argv[2], "w");
 	if (!fp_write) {
@@ -258,11 +268,6 @@ int main(int argc, char **argv) {
 	}
 	fclose(fp_write);
 
-	free(xr);
-	free(y);
-	free(A);
 	free(phi_flags);
-	free(psiT);
-	free(psi);
 	return 0;
 }
