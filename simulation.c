@@ -90,7 +90,7 @@ void cd_lasso(double *y, double *A,
 				r[j] -= x_hat[i] * A[j * N + i];
 			}
 
-			max_xi = max(max_xi, x_hat[i]);
+			max_xi = max(max_xi, fabs(x_hat[i]));
 		}
 		if ((max_dxi / max_xi) < tol) {
 			break;
