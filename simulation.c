@@ -102,10 +102,6 @@ void cd_lasso_randsampleDCT(double *y, bool *phi_flags,
 
 	double *y_hat = malloc(sizeof(double) * M);
 	random_sample_idct_1D(s_hat, N, phi_flags, M, y_hat);
-	for (size_t i = 0; i < M; ++i) {
-		printf("%lf ", y_hat[i]);
-	}
-	printf("\n");
 
 	double *r = malloc(sizeof(double) * M);
 	memcpy(r, y, sizeof(double) * M);
@@ -141,7 +137,6 @@ void cd_lasso_randsampleDCT(double *y, bool *phi_flags,
 			double dsk = fabs(s_hat[k] - s_k0);
 			max_dsk = max(dsk, max_dsk);
 			max_sk = max(fabs(s_hat[k]), max_sk);
-
 
 			// Adding back the residual contribution from s_hat[k]
 			m = 0;

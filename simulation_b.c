@@ -29,9 +29,6 @@ double t0[10000];
 double X0[10000];
 double Xr[10000];
 bool phi_flags[240];
-double psi[240 * 240];
-double psiT[240 * 240];
-double A[20 * 240];
 double y[20];
 double s[240];
 double xr[240];
@@ -40,25 +37,6 @@ double y_hat[20];
 double r[20];
 
 void ppg() {
-	// DCT basis matrix
-	// TODO: implement fast DCT so this isn't needed.
-	for (int k = 0; k < 240; ++k) {
-		double factor = (2.0 / sqrt(240)) * (k == 0 ? 1.0 / sqrt(2) : 1.0);
-		for (int n = 0; n < 240; ++n) {
-			psi[k * 240 + n] = factor * cos((M_PI / 240) * (n + 0.5) * k);
-			psiT[n * 240 + k] = psi[k * 240 + n];
-		}
-	}
-
-	// get_selected_rows(psiT, phi_flags, N_window, M, A);
-	size_t row = 0;
-	for (size_t i = 0; i < 240; ++i) {
-		if (phi_flags[i]) {
-			memcpy(A + row * 240, psiT + i * 240, 240 * sizeof(double));
-			if (row++ == 20) break;
-		}
-	}
-
 	for (size_t t = 0; t < 10000 - 240 + 1; t += 240 / 2) {
 		// get_selected_elements(X0 + t, phi_flags, N_window, M, y);
 		size_t idx = 0;
@@ -66,81 +44,98 @@ void ppg() {
 			if (phi_flags[i]) {
 				y[idx++] = X0[t + i];
 			}
-			if (idx == 20) break;
+			if (idx == M) break;
 		}
-		
-		// cd_lasso(y, A, M, N_window, 0.01, s, 1.0e-2);
-		// y M-dim, A is MxN, s is Nx1
+
+		// cd_lasso_randsampleDCT(y, phi_flags, M, N_window, 0.01, s, 1.0e-2);
+		//
+		// calc_Anorm2_randsampleDCT(phi_flags, N, A_norm2);
 		memset(A_norm2, 0, sizeof(double) * 240);
-		for (size_t i = 0; i < 20; ++i) {
-			for (size_t j = 0; j < 240; ++j) {
-				A_norm2[j] += pow(A[i * 240 + j], 2);
+		const double factor_1 = 2.0 / sqrt(240);
+		const double factor_0 = factor_1 / sqrt(2);
+		for (size_t n = 0; n < 240; ++n) {
+			if (phi_flags[n]) {
+				A_norm2[0] += factor_0 * factor_0;
+				for (size_t k = 1; k < 240; ++k) {
+					A_norm2[k] += pow(cos((M_PI / 240) * (n + 0.5) * k) * factor_1, 2);
+				}
 			}
 		}
 
-		for (size_t i = 0; i < 240; ++i) {
-			s[i] = 0.5;
+		for (size_t k = 0; k < 240; ++k) {
+			s[k] = 0.5;
 		}
 
-		// y_hat = A * s
-		// dot(A, s, M, N, 1, y_hat);
-		for (size_t i = 0; i < 20; ++i) {
-			y_hat[i] = 0;
-			for (size_t j = 0; j < 240; ++j) {
-				y_hat[i] += A[i * 240 + j] * s[j];
+		// random_sample_idct_1D(s, N, phi_flags, M, y_hat);
+		memset(y_hat, 0, sizeof(double) * 20);
+		for (size_t m = 0; m < 20; ++m) {
+			y_hat[m] = s[0] * factor_0;
+		}
+
+		size_t m = 0;
+		for (size_t n = 0; n < 240; ++n) {
+			if (phi_flags[n]) {
+				for (size_t k = 1; k < 240; ++k) {
+					y_hat[m] += cos((M_PI / 240) * (n + 0.5) * k) * s[k] * factor_1;
+				}
+				m++;
 			}
 		}
 
 		memcpy(r, y, sizeof(double) * 20);
+		// vec_sub_update(r, y_hat, M);
 		for (size_t i = 0; i < 20; ++i) {
 			r[i] -= y_hat[i];
 		}
 
-		double max_si = 0;
-		for (size_t i = 0; i < 240; ++i) {
-			if (fabs(s[i]) > max_si) {
-				max_si = fabs(s[i]);
-			}
-		}
-
+		double max_sk = 0.5; // depends on initialization
 		while (true) {
-			double max_dsi = 0;
-			for (size_t i = 0; i < 240; ++i) {
-				if (A_norm2[i] == 0.0) {
+			double max_dsk = 0;
+			for (size_t k = 0; k < 240; ++k) {
+				if (A_norm2[k] == 0.0)
 					continue;
+
+				double factor = (k == 0 ? factor_0 : factor_1);
+				double s_k0 = s[k];
+
+				// r += A[:,k] .* s[k]
+				double rho_k = 0;
+				size_t m = 0;
+				for (size_t n = 0; n < 240; ++n) {
+					if (phi_flags[n]) {
+						r[m] += s[k] * cos((M_PI / 240) * (n + 0.5) * k) * factor;
+						rho_k += r[m] * cos((M_PI / 240) * (n + 0.5) * k) * factor;
+						m++;
+					}
 				}
 
-				double s_i0 = s[i];
+				double sign = (rho_k > 0 ? 1.0 : -1.0);
+				s[k] = (sign * MAX(fabs(rho_k) - LASSO_lambda, 0)) / A_norm2[k];
 
-				// r += A[:,i] .* x[i]
-				double rho_i = 0;
-				for (size_t j = 0; j < 20; ++j) {
-					r[j] += A[j * 240 + i] * s[i];
-					rho_i += r[j] * A[j * 240 + i];
+				double dsk = fabs(s[k] - s_k0);
+				max_dsk = MAX(dsk, max_dsk);
+				max_sk = MAX(fabs(s[k]), max_sk);
+
+				// Adding back the residual contribution from s_hat[k]
+				m = 0;
+				for (size_t n = 0; n < 240; ++n) {
+					if (phi_flags[n]) {
+						r[m++] -= s[k] * cos((M_PI / 240) * (n + 0.5) * k) * factor;
+					}
 				}
-
-				double sign = (rho_i > 0 ? 1.0 : -1.0);
-				s[i] = (sign * MAX(fabs(rho_i) - LASSO_lambda, 0)) / A_norm2[i];
-
-				double dsi = fabs(s[i] - s_i0);
-				max_dsi = (dsi > max_dsi ? dsi : max_dsi);
-
-				for (int j = 0; j < 20; ++j) {
-					r[j] -= s[i] * A[j * 240 + i];
-				}
-
-				max_si = MAX(max_si, fabs(s[i]));
 			}
-			if ((max_dsi / max_si) < CD_diff_thresh) {
-				break;
-			}
+			if ((max_dsk / max_sk) < CD_diff_thresh) break;
 		}
 
-		// dot(psiT, s, N_window, N_window, 1, xr);
-		for (size_t i = 0; i < 240; ++i) {
-			xr[i] = 0;
-			for (size_t j = 0; j < 240; ++j) {
-				xr[i] += psiT[i * 240 + j] * s[j];
+		// idct_1D(s, N_window, xr);
+		memset(xr, 0, sizeof(double) * 240);
+		for (size_t n = 0; n < 240; ++n) {
+			xr[n] += s[0] * factor_0;
+		}
+
+		for (size_t k = 1; k < 240; ++k) {
+			for (size_t n = 0; n < 240; ++n) {
+				xr[n] += cos((M_PI / 240) * (n + 0.5) * k) * s[k] * factor_1;
 			}
 		}
 
