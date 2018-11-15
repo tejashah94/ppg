@@ -15,86 +15,143 @@ double max(double a, double b) {
 	return (a > b ? a : b) ;
 }
 
-void dot(double *A, double *B, size_t M, size_t N, size_t P, double *C) {
-	// C = AB, everything is row-major
-	for (int i = 0; i < M; ++i) {
-		for (int j = 0; j < P; ++j) {
-			C[i * P + j] = 0;
-			for (int k = 0; k < N; ++k) {
-				C[i * P + j] += A[i * N + k] * B[k * P + j];
+// TODO: implement fast DCT so this isn't needed.
+void dct_1D(double *X, size_t N, double *X_DCT) {
+	memset(X_DCT, 0, sizeof(double) * N);
+	const double factor_1 = 2.0 / sqrt(N);
+	const double factor_0 = factor_1 / sqrt(2);
+	for (size_t k = 0; k < N; ++k) {
+		for (size_t n = 0; n < N; ++n) {
+			X_DCT[k] += cos((M_PI / N) * (n + 0.5) * k) * X[n];
+		}
+	}
+	X_DCT[0] *= factor_0;
+	for (size_t k = 1; k < N; ++k) {
+		X_DCT[k] *= factor_1;
+	}
+}
+
+void idct_1D(double *X_DCT, size_t N, double *X) {
+	memset(X, 0, sizeof(double) * N);
+	const double factor_1 = 2.0 / sqrt(N);
+	const double factor_0 = factor_1 / sqrt(2);
+	for (size_t n = 0; n < N; ++n) {
+		X[n] += X_DCT[0] * factor_0;
+	}
+
+	for (size_t k = 1; k < N; ++k) {
+		for (size_t n = 0; n < N; ++n) {
+			X[n] += cos((M_PI / N) * (n + 0.5) * k) * X_DCT[k] * factor_1;
+		}
+	}
+}
+
+void random_sample_idct_1D(double *X_DCT, size_t N, bool *phi_flags, size_t M, double *Y) {
+	memset(Y, 0, sizeof(double) * M);
+	const double factor_1 = 2.0 / sqrt(N);
+	const double factor_0 = factor_1 / sqrt(2);
+	for (size_t m = 0; m < M; ++m) {
+		Y[m] = X_DCT[0] * factor_0;
+	}
+
+	size_t m = 0;
+	for (size_t n = 0; n < N; ++n) {
+		if (phi_flags[n]) {
+			for (size_t k = 1; k < N; ++k) {
+				Y[m] += cos((M_PI / N) * (n + 0.5) * k) * X_DCT[k] * factor_1;
+			}
+			m++;
+		}
+	}
+}
+
+void vec_sub_update(double *vec, double *b, size_t N) {
+	for (size_t i = 0; i < N; ++i) {
+		vec[i] -= b[i];
+	}
+}
+
+void calc_Anorm2_randsampleDCT(bool *phi_flags, size_t N, double *A_norm2) {
+	memset(A_norm2, 0, sizeof(double) * N);
+	const double factor_1 = 2.0 / sqrt(N);
+	const double factor_0 = factor_1 / sqrt(2);
+	for (size_t n = 0; n < N; ++n) {
+		if (phi_flags[n]) {
+			A_norm2[0] += factor_0 * factor_0;
+			for (size_t k = 1; k < N; ++k) {
+				A_norm2[k] += pow(cos((M_PI / N) * (n + 0.5) * k) * factor_1, 2);
 			}
 		}
 	}
 }
 
-void vecsub(double *a, double *b, size_t N, double *out) {
-	for (size_t i = 0; i < N; ++i) {
-		out[i] = a[i] - b[i];
-	}
-}
-
-void cd_lasso(double *y, double *A,
-				size_t M, size_t N, double lambda,
-				double *x_hat, double tol) {
-	// y M-dim, A is MxN, x_hat is Nx1
+void cd_lasso_randsampleDCT(double *y, bool *phi_flags,
+							size_t M, size_t N, double lambda,
+							double *s_hat, double tol) {
+	// Y is M-dim, phi_flags controls which DCT components to use, x_hat is Nx1
+	// We don't need an explicit (A) matrix, as we know it's going to randomly
+	// sample from the IDCT. We can call the functions which can calculate the
+	// products we want from phi_flags and the definition of the DCT.
 	double *A_norm2 = malloc(sizeof(double) * N);
-	memset(A_norm2, 0, sizeof(double) * N);
-	for (int i = 0; i < M; ++i) {
-		for (int j = 0; j < N; ++j) {
-			A_norm2[j] += pow(A[i * N + j], 2);
-		}
-	}
-
-	for (int i = 0; i < N; ++i) {
-		x_hat[i] = 0.5;
+	calc_Anorm2_randsampleDCT(phi_flags, N, A_norm2);
+	
+	// can initialize with anything I think...
+	for (size_t k = 0; k < N; ++k) {
+		s_hat[k] = 0.5;
 	}
 
 	double *y_hat = malloc(sizeof(double) * M);
-	// y_hat = A * x_hat
-	dot(A, x_hat, M, N, 1, y_hat);
+	random_sample_idct_1D(s_hat, N, phi_flags, M, y_hat);
+	for (size_t i = 0; i < M; ++i) {
+		printf("%lf ", y_hat[i]);
+	}
+	printf("\n");
 
 	double *r = malloc(sizeof(double) * M);
 	memcpy(r, y, sizeof(double) * M);
-	vecsub(y, y_hat, M, r);
+	vec_sub_update(r, y_hat, M);
 
-	double max_xi = 0;
-	for (int i = 0; i < N; ++i) {
-		if (fabs(x_hat[i]) > max_xi) {
-			max_xi = fabs(x_hat[i]);
-		}
-	}
-
+	const double factor_1 = 2.0 / sqrt(N);
+	const double factor_0 = factor_1 / sqrt(2);
+	
+	double max_sk = 0.5; // depends on initialization
 	while (true) {
-		double max_dxi = 0;
-		for (int i = 0; i < N; ++i) {
-			if (A_norm2[i] == 0.0) {
+		double max_dsk = 0;
+		for (size_t k = 0; k < N; ++k) {
+			if (A_norm2[k] == 0.0)
 				continue;
+
+			double factor = (k == 0 ? factor_0 : factor_1);
+			double s_k0 = s_hat[k];
+
+			// r += A[:,k] .* s[k]
+			double rho_k = 0;
+			size_t m = 0;
+			for (size_t n = 0; n < N; ++n) {
+				if (phi_flags[n]) {
+					r[m] += s_hat[k] * cos((M_PI / N) * (n + 0.5) * k) * factor;
+					rho_k += r[m] * cos((M_PI / N) * (n + 0.5) * k) * factor;
+					m++;
+				}
 			}
 
-			double x_i0 = x_hat[i];
+			double sign = (rho_k > 0 ? 1.0 : -1.0);
+			s_hat[k] = (sign * max(fabs(rho_k) - lambda, 0)) / A_norm2[k];
 
-			// r += A[:,i] .* x[i]
-			double rho_i = 0;
-			for (int j = 0; j < M; ++j) {
-				r[j] += A[j * N + i] * x_hat[i];
-				rho_i += r[j] * A[j * N + i];
+			double dsk = fabs(s_hat[k] - s_k0);
+			max_dsk = max(dsk, max_dsk);
+			max_sk = max(fabs(s_hat[k]), max_sk);
+
+
+			// Adding back the residual contribution from s_hat[k]
+			m = 0;
+			for (size_t n = 0; n < N; ++n) {
+				if (phi_flags[n]) {
+					r[m++] -= s_hat[k] * cos((M_PI / N) * (n + 0.5) * k) * factor;
+				}
 			}
-
-			double sign = (rho_i > 0 ? 1.0 : -1.0);
-			x_hat[i] = (sign * max(fabs(rho_i) - lambda, 0)) / A_norm2[i];
-
-			double dxi = fabs(x_hat[i] - x_i0);
-			max_dxi = (dxi > max_dxi ? dxi : max_dxi);
-
-			for (int j = 0; j < M; ++j) {
-				r[j] -= x_hat[i] * A[j * N + i];
-			}
-
-			max_xi = max(max_xi, fabs(x_hat[i]));
 		}
-		if ((max_dxi / max_xi) < tol) {
-			break;
-		}
+		if ((max_dsk / max_sk) < tol) break;
 	}
 
 	free(r);
@@ -117,6 +174,7 @@ void get_random_sample_flags_from_file(char *filepath, size_t N, bool *flags) {
 	fclose(fp);
 }
 
+/*
 void get_random_sample_flags(size_t N, size_t m, bool *flags) {
 	for (int i = 0; i < N; ++i) {
 		flags[i] = false;
@@ -132,6 +190,7 @@ void get_random_sample_flags(size_t N, size_t m, bool *flags) {
 		}
 	}
 }
+*/
 
 void get_selected_elements(double *seq, bool *flags, int N, int m, double *out) {
 	size_t idx = 0;
@@ -140,16 +199,6 @@ void get_selected_elements(double *seq, bool *flags, int N, int m, double *out) 
 			out[idx++] = seq[i];
 		}
 		if (idx == m) break;
-	}
-}
-
-void get_selected_rows(double *mat, bool *flags, int N, int m, double *out) {
-	size_t row = 0;
-	for (int i = 0; i < N; ++i) {
-		if (flags[i]) {
-			memcpy(out + row * N, mat + i * N, N * sizeof(double));
-			if (row++ == m) break;
-		}
 	}
 }
 
@@ -169,31 +218,14 @@ void ppg(double *t0, double *X0, size_t N0,
 	size_t N_window = params.N_window;
 	size_t M = params.M;
 
-	// DCT basis matrix
-	// TODO: implement fast DCT so this isn't needed.
-	double *psi = malloc(sizeof(double) * N_window * N_window);
-	// This is psi.T. Only keeping a separate copy because I am lazy.
-	// TODO: become less lazy. Also write something better.
-	double *psiT = malloc(sizeof(double) * N_window * N_window);
-	for (int k = 0; k < N_window; ++k) {
-		double factor = (2.0 / sqrt(N_window)) * (k == 0 ? 1.0 / sqrt(2) : 1.0);
-		for (int n = 0; n < N_window; ++n) {
-			psi[k * N_window + n] = factor * cos((M_PI / N_window) * (n + 0.5) * k);
-			psiT[n * N_window + k] = psi[k * N_window + n];
-		}
-	}
-
-	double *A = malloc(sizeof(double) * M * N_window);
-	get_selected_rows(psiT, phi_flags, N_window, M, A);
-
 	double *y = malloc(sizeof(double) * M);
 	double *s = malloc(sizeof(double) * N_window);
 	double *xr = malloc(sizeof(double) * N_window);
 
 	for (size_t t = 0; t < N0 - N_window + 1; t += N_window / 2) {
 		get_selected_elements(X0 + t, phi_flags, N_window, M, y);
-		cd_lasso(y, A, M, N_window, 0.01, s, 1.0e-2);
-		dot(psiT, s, N_window, N_window, 1, xr);
+		cd_lasso_randsampleDCT(y, phi_flags, M, N_window, 0.01, s, 1.0e-2);
+		idct_1D(s, N_window, xr);
 		memcpy(Xr + t + N_window / 4,
 			   xr	  + N_window / 4,
 			   sizeof(double) * N_window / 2);
@@ -202,9 +234,6 @@ void ppg(double *t0, double *X0, size_t N0,
 	free(xr);
 	free(s);
 	free(y);
-	free(A);
-	free(psiT);
-	free(psi);
 }
 
 /*
